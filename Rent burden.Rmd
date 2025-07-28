@@ -1,0 +1,206 @@
+---
+title: "anne's assignment"
+output: html_document
+date: "2025-06-19"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(janitor)
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+```
+
+```{r}
+census_api_key("d6e6d6edbc19e543f874f5825f0ec676c65d387b", install = TRUE, overwrite = TRUE) #Replace with your API key
+```
+
+```{r}
+zillow_data <- read.csv("ZORI.csv") #Obtained from Zillow https://www.zillow.com/research/data/https://www.zillow.com/research/data/
+```
+
+```{r}
+zillow_data <- zillow_data %>% filter(StateName == "NY") %>% filter(City == "New York")
+```
+
+```{r}
+crosswalk <- read.csv("ZIP_TRACT_032025.csv") #Obtained from HUD https://www.huduser.gov/portal/datasets/usps_crosswalk.html
+```
+
+```{r}
+zillow_data <- zillow_data %>% 
+  rename(ZIP = RegionName) %>%
+  mutate(ZIP = as.character(ZIP)) 
+```
+
+```{r}
+crosswalk <- crosswalk %>% filter(USPS_ZIP_PREF_STATE == "NY") %>% filter(!is.na(ZIP)) %>% select(ZIP, TRACT)
+```
+
+```{r}
+# Convert crosswalk$ZIP to character before join
+crosswalk <- crosswalk %>%
+  mutate(ZIP = as.character(ZIP))
+
+# Then do the join
+zillow_cross <- zillow_data %>%
+  inner_join(crosswalk, by = "ZIP")
+```
+
+```{r}
+zillow_long <- zillow_data %>%
+  pivot_longer(
+    cols = starts_with("X20"), 
+    names_to = "month", 
+    values_to = "rent_index"
+  ) %>%
+  mutate(
+    # Remove the "X" and convert to proper date
+    month = as.Date(gsub("X", "", month), format = "%Y.%m.%d"),
+    year = format(month, "%Y"),
+    rent_index = as.numeric(rent_index)
+  ) %>% filter(year == "2023")
+```
+
+```{r}
+zillow_long <- zillow_long %>% group_by(ZIP) %>% summarize(rent_index = mean(rent_index))
+```
+
+```{r}
+# Get tract-level ACS data (2023 median household income)
+ny_income_tract <- get_acs(
+  geography = "tract",
+  variables = c(median_income = "B19013_001"),
+  state = "NY",
+  year = 2023,
+  geometry = FALSE,
+  output = "wide"
+)
+```
+
+```{r}
+# Add county info to ACS tract income data
+ny_income_tract <- ny_income_tract %>%
+  mutate(COUNTY = substr(GEOID, 3, 5))
+
+# Join ZIP-tract crosswalk with tract income data
+tract_zip_nyc <- tract_zip_xwalk %>%
+  left_join(ny_income_tract, by = c("TRACT" = "GEOID"))
+
+# Filter only NYC counties
+nyc_fips <- c("005", "047", "061", "081", "085")
+tract_zip_nyc <- tract_zip_nyc %>%
+  filter(COUNTY %in% nyc_fips)
+```
+
+```{r}
+# Join tract income to crosswalk and compute ZIP-level weighted income
+zip_income <- tract_zip_nyc %>%
+  group_by(ZIP) %>%
+  summarize(
+    weighted_income = sum(median_incomeE * RES_RATIO, na.rm = TRUE) / sum(RES_RATIO, na.rm = TRUE)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+#Join rent and income data
+joined_data <- zillow_long %>%
+  inner_join(zip_income, by = "ZIP")
+
+# Calculate Rent Burden
+joined_data <- joined_data %>%
+  mutate(
+    annual_rent = rent_index * 12,
+     rent_burden = (annual_rent / weighted_income)*100
+  ) 
+```
+
+```{r}
+joined_data <- joined_data %>% 
+  mutate(
+    rent_burden_bin = cut(
+      rent_burden,
+      breaks = c(-Inf, 30, 40, 50, 60, Inf),
+      right = FALSE,
+      labels = c("<30%", "30-39%", "40-49%", "50-59%", "≥60%")
+    )
+  ) %>% drop_na()
+```
+
+```{r}
+write_csv(joined_data, file = "rent_burden_NEW1.csv")
+```
+
+```{r}
+#Trying to calculate 2025 rent burden using inflation-corrected income
+
+# Inflation factor to convert 2023 income to 2025 dollars - CPI estimates total inflation of 4.44%
+inflation_factor <- 1.06
+
+# Adjust income
+zip_income_adjusted <- zip_income %>%
+  mutate(
+    median_income_2025 = weighted_income * inflation_factor)
+```
+
+```{r}
+#Getting 2025 ZORI data
+zillow_long_2025 <- zillow_data %>%
+  pivot_longer(
+    cols = starts_with("X20"), 
+    names_to = "month", 
+    values_to = "rent_index"
+  ) %>%
+  mutate(
+    # Remove the "X" and convert to proper date
+    month = as.Date(gsub("X", "", month), format = "%Y.%m.%d"),
+    year = format(month, "%Y"),
+    rent_index = as.numeric(rent_index)
+  ) %>% filter(year == "2025")
+
+zillow_long_2025 <- zillow_long_2025 %>% group_by(RegionName) %>% summarize(rent_index = mean(rent_index)) %>% rename(ZIP = RegionName)
+```
+
+```{r}
+#standardize ZIP column
+zillow_long_2025 <- zillow_long_2025 %>%
+  mutate(ZIP = as.character(ZIP))
+
+zip_income_adjusted <- zip_income_adjusted %>%
+  mutate(ZIP = as.character(ZIP))
+
+#new joined data
+joined_data_new <- zillow_long_2025 %>%
+  inner_join(zip_income_adjusted, by = "ZIP")
+
+# Calculate Rent Burden
+joined_data_new <- joined_data_new %>%
+  mutate(
+    annual_rent = rent_index * 12,
+    rent_burden = (annual_rent / weighted_income)*100
+  ) 
+```
+
+```{r}
+joined_data_new <- joined_data_new %>% 
+  mutate(
+    rent_burden_bin = cut(
+      rent_burden,
+      breaks = c(-Inf, 30, 40, 50, 60, Inf),
+      right = FALSE,
+      labels = c("<30%", "30-39%", "40-49%", "50-59%", "≥60%")
+    )
+  ) %>% drop_na()
+```
+
+```{r}
+write_csv(joined_data_new, file = "rent_burden_2025.csv")
+```

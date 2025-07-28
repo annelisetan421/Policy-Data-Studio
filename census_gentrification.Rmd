@@ -1,0 +1,208 @@
+---
+title: "Census_Gentrification"
+output: html_document
+date: "2025-07-09"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidycensus)
+library(tidyverse)
+library(sf)
+```
+
+```{r}
+census_api_key("d6e6d6edbc19e543f874f5825f0ec676c65d387b", install = TRUE, overwrite = TRUE) #Replace with your API key
+```
+
+```{r}
+# Define NYC borough counties (FIPS codes)
+nyc_counties <- c("005",  # Bronx
+                  "047",  # Kings (Brooklyn)
+                  "061",  # New York (Manhattan)
+                  "081",  # Queens
+                  "085")  # Richmond (Staten Island)
+```
+
+```{r}
+#Obtaining 2023 census data
+acs_2013 <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_pop = "B03002_001",
+    white_pop = "B03002_003",
+    black_pop = "B03002_004",
+    asian_pop = "B03002_006",
+    hispanic_pop = "B03002_012"
+  ),
+  state = "36",
+  county = nyc_counties,
+  year = 2013,
+  geometry = TRUE,
+  output = "wide"
+)
+
+#Obtaining 2023 census data
+acs_2023 <- get_acs(
+  geography = "tract",
+  variables = c(
+    total_pop = "B03002_001",
+    white_pop = "B03002_003",
+    black_pop = "B03002_004",
+    asian_pop = "B03002_006",
+    hispanic_pop = "B03002_012"
+  ),
+  state = "36",
+  county = nyc_counties,
+  year = 2023,
+  geometry = TRUE,
+  output = "wide"
+)
+```
+
+```{r}
+# Select relevant columns and rename for clarity 
+acs_2013 <- acs_2013 %>%
+  select(GEOID, geometry,
+         total_2013 = total_popE,
+         white_2013 = white_popE,
+         black_2013 = black_popE,
+         asian_2013 = asian_popE,
+         hispanic_2013 = hispanic_popE)
+
+acs_2023 <- acs_2023 %>%
+  select(GEOID,
+         total_2023 = total_popE,
+         white_2023 = white_popE,
+         black_2023 = black_popE,
+         asian_2023 = asian_popE,
+         hispanic_2023 = hispanic_popE)
+```
+
+```{r}
+ # Drop geometry from one of them to avoid conflicts
+acs_2013_nogeo <- st_drop_geometry(acs_2013)
+
+# Left join by GEOID:
+race_change <- left_join(acs_2023, acs_2013_nogeo, by = "GEOID")
+```
+
+```{r}
+# Calculate percent change for each group (avoiding division by zero)
+race_change <- race_change %>%
+  mutate(
+    pct_change_white = ifelse(white_2013 > 0,
+                              100 * (white_2023 - white_2013) / white_2013, NA_real_),
+    pct_change_black = ifelse(black_2013 > 0,
+                              100 * (black_2023 - black_2013) / black_2013, NA_real_),
+    pct_change_asian = ifelse(asian_2013 > 0,
+                              100 * (asian_2023 - asian_2013) / asian_2013, NA_real_),
+    pct_change_hispanic = ifelse(hispanic_2013 > 0,
+                                100 * (hispanic_2023 - hispanic_2013) / hispanic_2013, NA_real_)
+  )
+```
+
+```{r}
+#Calculate change in race and mutate new columns
+summary(race_change$pct_change_white)
+summary(race_change$pct_change_black)
+```
+
+```{r}
+race_change <- race_change %>%
+  mutate(
+    pct_change_white = replace_na(pct_change_white, 0),
+    pct_change_black = replace_na(pct_change_black, 0),
+    pct_change_asian = replace_na(pct_change_asian, 0),
+    pct_change_hispanic = replace_na(pct_change_hispanic, 0)
+  )
+```
+
+```{r}
+write_csv(race_change, "race_percent_change.csv")
+
+```
+
+```{r}
+# Variable for median household income
+income_var <- "B19013_001"
+
+# 2013 income (in 2013 dollars)
+income_2013 <- get_acs(
+  geography = "zip code tabulation area",
+  variables = income_var,
+  year = 2013,
+  survey = "acs5"
+) %>%
+  rename(income_2013 = estimate) %>%
+  select(GEOID, income_2013)
+
+# 2023 income  
+income_2023 <- get_acs(
+  geography = "zip code tabulation area",
+  variables = income_var,
+  year = 2023,
+  survey = "acs5"
+) %>%
+  rename(income_2023 = estimate) %>%
+  select(GEOID, income_2023)
+
+```
+
+```{r}
+adjustment_factor <- 1.30  # 2013 to 2023
+
+income_change <- income_2013 %>%
+  inner_join(income_2023, by = "GEOID") %>%
+  mutate(
+    income_2013_adj = income_2013 * adjustment_factor,
+    absolute_change = income_2023 - income_2013_adj,
+    percent_change = (income_2023 - income_2013_adj) / income_2013_adj * 100
+  )
+```
+
+
+```{r}
+# Create percent change bins
+income_change <- income_change %>%
+  mutate(
+    income_change_bin = case_when(
+      percent_change < -10 ~ "Decrease >10%",
+      percent_change >= -10 & percent_change < 0 ~ "No growth or decline",
+      percent_change >= 0 & percent_change < 10 ~ "0–10% growth",
+      percent_change >= 10 & percent_change < 20 ~ "10–20% growth",
+      percent_change >= 20 & percent_change < 30 ~ "20–30% growth",
+      percent_change >= 30 & percent_change < 40 ~ "30–40% growth",
+      percent_change >= 40 & percent_change < 50 ~ "40–50% growth",
+      percent_change >= 50 ~ "Over 50% growth"
+    )
+  )
+```
+
+```{r}
+nyc_zip_ranges <- c(
+  10001:10292,  # Manhattan
+  10451:10475,  # Bronx
+  11201:11239,  # Brooklyn
+  11101:11697,  # Queens
+  10301:10314   # Staten Island
+)
+
+# Convert to character format to match GEOID format
+nyc_zip_codes <- as.character(nyc_zip_ranges)
+```
+
+```{r}
+# Filter to NYC zip codes only
+income_change_nyc <- income_change %>%
+  filter(GEOID %in% nyc_zip_codes)
+```
+
+```{r}
+write_csv(income_change_nyc, "zip_income_change_inflation_adjusted.csv")
+```
+
+

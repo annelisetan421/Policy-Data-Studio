@@ -1,0 +1,35 @@
+---
+title: "Data Wrangling for Visualizations"
+output: html_document
+date: "2025-07-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+#Matching listings zip code to tract
+listings <- read.csv("Addresses_Sheet3.csv")
+```
+
+```{r}
+listings <- listings %>%
+  rename(ZIP = `ZIP Code`) %>%  
+  mutate(ZIP = sprintf("%05s", ZIP))  # pad with leading zeros
+```
+
+```{r}
+listings_per_zip <- listings %>%
+  group_by(ZIP) %>%
+  summarise(listing_count = n()) %>%
+  ungroup()
+```
+
+```{r}
+write.csv (listings_per_zip, "listings_per_ZIP.csv")
+```

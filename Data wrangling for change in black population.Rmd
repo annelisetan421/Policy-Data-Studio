@@ -1,0 +1,38 @@
+---
+title: "Data wrangling for change in Black population"
+output: html_document
+date: "2025-07-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+tract_zip_xwalk <- read.csv("TRACT_ZIP_032025.csv")
+```
+
+```{r}
+#Percent change in black population
+change_black <- read.csv("race_percent_change.csv")
+```
+
+```{r}
+change_black$GEOID <- as.character(change_black$GEOID)
+tract_zip_black <- tract_zip_xwalk %>%
+  left_join(change_black, by = c("TRACT" = "GEOID"))
+```
+
+```{r}
+tract_zip_black <- tract_zip_black %>% filter(USPS_ZIP_PREF_STATE == "NY") %>% drop_na()
+```
+
+```{r}
+write.csv(tract_zip_black, "percent change black with zip.csv")
+```
+```
+
